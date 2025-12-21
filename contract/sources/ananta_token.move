@@ -2,9 +2,11 @@ module my_addr::ananta_token_project {
     use std::signer; 
     use std::option;
     use std::string;
+
+    use aptos_framework::event;
     
-    use aptos_framework::object::{Self, ExtendRef};
-    use aptos_framework::fungible_asset::{Self, MintRef, TransferRef, BurnRef, MutateMetadataRef};
+    use aptos_framework::object::{Self, ExtendRef, Object};
+    use aptos_framework::fungible_asset::{Self, MintRef, TransferRef, BurnRef, MutateMetadataRef, Metadata};
     use aptos_framework::primary_fungible_store;
 
     const TOKEN_SEED: vector<u8> = b"ANANTA";
@@ -16,6 +18,12 @@ module my_addr::ananta_token_project {
         burn_ref: BurnRef,
         extend_ref: ExtendRef,
         mutate_ref: MutateMetadataRef,
+    }
+    #[event]
+    struct TokenInitEvent has copy, drop, store {
+        admin_addr: address,
+        token_name: string::String,
+        asset_metadata: Object<Metadata>,
     }
 
     public entry fun init_token(admin: &signer) {
@@ -47,6 +55,12 @@ module my_addr::ananta_token_project {
             extend_ref,
             mutate_ref
         });
+
+        event::emit(TokenInitEvent {
+            admin_addr: signer::address_of(admin),
+            token_name: string::utf8(TOKEN_SEED),
+            asset_metadata: object::object_from_constructor_ref<Metadata>(&ctor)
+        })
     }
 
     //Mint token và gửi vào ví admin 
