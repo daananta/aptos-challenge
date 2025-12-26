@@ -2,6 +2,7 @@
 name = "MessageBoard"
 version = "1.0.0"
 authors = []
+edition = "2024.beta"
 
 [addresses]
 my_addr = "0xc801ddb463d08031411b0f0db1aff3e43595505427eb512df46cce1daf101f09"

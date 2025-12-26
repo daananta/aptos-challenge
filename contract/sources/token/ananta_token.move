@@ -96,4 +96,39 @@ module my_addr::ananta_token_project {
         primary_fungible_store::mint(&token_capabities.mint_ref, user, amount);
     }
 
+    #[test_only]
+    use aptos_framework::account; // Dùng để tạo account giả lập
+
+    //TEST CASE 1: KỊCH BẢN THÀNH CÔNG (HAPPY PATH)
+    // Admin khởi tạo token và mint thành công cho Bob
+    #[test(admin = @my_addr, user_bob = @0xB0B)]
+    fun test_flow_mint_success(
+        admin: &signer,
+        user_bob: &signer
+    ) acquires TokenCapabilities{
+        //1. Setup môi trường giả lập 
+        //Init token bởi admin 
+
+        init_token(admin);
+
+        let user_addr = signer::address_of(user_bob);
+        let amount_mint = 1_000_000; // 1 token 
+
+        //2 Action: Thực hiện hành động mint 
+        mint_to(admin, user_addr, amount_mint);
+
+        //3. Assert: Kiểm tra kết quả 
+        //Cần lấy lại dịa chỉ của Metadata Object để check số dư 
+        let admin_addr = signer::address_of(admin);
+        let token_addr = object::create_object_address(&admin_addr, TOKEN_SEED);
+        let metadata = object::address_to_object<Metadata>(token_addr);
+
+        //Kiểm tra số dư của bob
+        let balance_bob = primary_fungible_store::balance(user_addr, metadata);
+
+        //Nếu số dư của bob bằng đúng số dư amount mint, thì test pass 
+        assert!(balance_bob == amount_mint, 101);
+    }
+
 }
+
