@@ -4,11 +4,13 @@ module my_addr::userprofile {
     use std::error;
     
     use aptos_framework::event;
+    use aptos_framework::smart_table::{Self, SmartTable};
     use aptos_framework::timestamp;
     use aptos_framework::simple_map::{Self, SimpleMap};
 
     
     use my_addr::game_types::{Self, ServerRegion, RankLevel, SocialType};
+    use my_addr::challenge::{Self, Submission};
 
     // --- Constants Internal (Chỉ module này cần biết) ---
     const USER_SCHEMA_VERSION: u8 = 1;
@@ -97,6 +99,13 @@ module my_addr::userprofile {
         verified: bool,
         linked_at: u64,
     }   
+
+    struct PlayerPortfolio has key {
+        // Map từ Challenge ID -> Submission
+        submissions: SmartTable<u64, Submission>, 
+        total_participated: u64,
+        total_wins: u64,
+    }
     
     // =============================================================================
     // FUNCTIONS
