@@ -301,7 +301,10 @@ module my_addr::userprofile {
         exists<UserProfile>(user)
     }
 
+    //Hàm nội bộ
     fun assert_initialized(addr: address) {
         assert!(exists<UserProfile>(addr), error::invalid_state(E_USER_NOT_INITIALIZED));
     }
+
+    
 }

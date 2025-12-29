@@ -1,5 +1,15 @@
 module my_addr::game_types {
     use std::string::String;
+
+
+    ///Lỗi không có scoring_mode hoặc sai
+    const E_INVALID_SCORING_MODE: u64 = 1;
+    ///Lỗi không có category(thể loại thử thách)
+    const E_INVALID_CATEGORY_MODE: u64 = 2;
+    ///Lỗi không có distribution(cách chia tiền)
+    const E_INVALID_DISTRIBUTION_MODE: u64 = 3;
+    
+
     
     // --- 1. Social Types ---
     // Chuyển từ const u8 sang Enum để dùng làm Key trong SimpleMap
@@ -31,7 +41,7 @@ module my_addr::game_types {
     }
 
     public enum ChallengeStatus has copy, drop, store {
-        Draft,      // Mới nháp, chưa nạp tiền
+        Upcoming,   //Sắp diễn ra
         Active,     // Đã nạp tiền, đang nhận bài thi
         Validation, // Hết hạn nộp, đang chấm điểm
         Completed,  // Đã trả thưởng xong
@@ -85,6 +95,31 @@ module my_addr::game_types {
         Disputed                // Đang khiếu nại (mở rộng sau này dễ dàng)
     }
 
+    public enum RewardDistribution has copy, drop, store {
+        // Kiểu 1: Cố định cho mỗi người thắng theo %(Bounty)
+        FixedPerWinner(u64), 
+
+        // Kiểu 2: Chia theo phần trăm thứ hạng (Esport / Hackathon)
+        // Ví dụ: Vector [5000, 3000, 2000] -> Top 1: 50%, Top 2: 30%, Top 3: 20%.
+        // Tổng phải <= 10000 (100%).
+        RankedPercentage(vector<u64>),
+
+        // Kiểu 3: Chia đều quỹ thưởng (Community Event)
+        // Ví dụ: Quỹ 100 APT, có 4 người thắng -> Mỗi người 25 APT.
+        EqualShare, 
+    }
+
+    public enum Phase has copy, drop, store {
+        Draft,              // Mới tạo
+        Upcoming,           // Đã nạp tiền, chờ giờ G (now < start_at)
+        Submission,         // Đang nhận bài
+        Voting,             // Hết hạn nộp, Giám khảo đang chấm
+        ResultsPublished,   // Đã có kết quả tạm, chờ khiếu nại
+        Disputed,           // Đang cãi nhau
+        Finalized,          // Xong phim, cho rút tiền
+        Cancelled           // Hủy giải a
+    }
+
     // --- HELPER FUNCTIONS ---
     // Giúp chuyển đổi từ số (Frontend gửi lên) sang Enum (Logic Move)
 
@@ -104,5 +139,34 @@ module my_addr::game_types {
         else if (code == 3) { ServerRegion::EU }
         else if (code == 4) { ServerRegion::SEA }
         else { ServerRegion::Unknown }
+    }
+
+    public fun u8_to_scoring(code: u8): ScoringMode {
+        if(code == 1) {ScoringMode::CommunityVote}
+        else if(code == 2) {ScoringMode::JudgePick}
+        else{
+             abort E_INVALID_SCORING_MODE
+        }
+    }
+
+    public fun u8_to_category(code: u8): ChallengeCategory {
+        if(code == 1) {ChallengeCategory::Speedrun}
+        else if(code == 2) {ChallengeCategory::PvP_Combat}
+        else if(code == 3) {ChallengeCategory::Achievement}
+        else if(code == 4) {ChallengeCategory::ContentCreation}
+        else if(code == 5) {ChallengeCategory::Strategy_Guide}
+        else if(code == 6) {ChallengeCategory::CommunityEvent}
+        else if(code == 7) {ChallengeCategory::BugBounty}
+        else if(code == 8) {ChallengeCategory::Other}
+        else { abort E_INVALID_CATEGORY_MODE }
+    }
+
+    public fun u8_to_distribution(code: u8): RewardDistribution {
+        if (code == 1) {RewardDistribution::FixedPerWinner}
+        else if(code == 2) {RewardDistribution::RankedPercentage}
+        else if(code == 3) {RewardDistribution::EqualShare}
+        else {
+            abort E_INVALID_DISTRIBUTION_MODE
+        }
     }
 }
