@@ -41,12 +41,9 @@ module my_addr::game_types {
     }
 
     public enum ChallengeStatus has copy, drop, store {
-        Upcoming,   //Sắp diễn ra
-        Active,     // Đã nạp tiền, đang nhận bài thi
-        Validation, // Hết hạn nộp, đang chấm điểm
-        Completed,  // Đã trả thưởng xong
-        Cancelled,  // Đã hủy, hoàn tiền
-        Disputed    // Đang có tranh chấp
+        Active,     // Đang diễn ra (Bình thường)
+        Cancelled,  // Admin hủy kèo (Dừng lại)
+        Completed,  // Đã trao giải xong (Kết thúc)
     }
 
     public enum ChallengeCategory has copy, drop, store {
@@ -109,16 +106,6 @@ module my_addr::game_types {
         EqualShare, 
     }
 
-    public enum Phase has copy, drop, store {
-        Draft,              // Mới tạo
-        Upcoming,           // Đã nạp tiền, chờ giờ G (now < start_at)
-        Submission,         // Đang nhận bài
-        Voting,             // Hết hạn nộp, Giám khảo đang chấm
-        ResultsPublished,   // Đã có kết quả tạm, chờ khiếu nại
-        Disputed,           // Đang cãi nhau
-        Finalized,          // Xong phim, cho rút tiền
-        Cancelled           // Hủy giải a
-    }
 
     // --- HELPER FUNCTIONS ---
     // Giúp chuyển đổi từ số (Frontend gửi lên) sang Enum (Logic Move)

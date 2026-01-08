@@ -17,18 +17,18 @@ module my_addr::challenge {
     use aptos_framework::event;
     use aptos_framework::timestamp;
 
-    use my_addr::game_types::{Self, ChallengeStatus, ChallengeCategory, SubmissionStatus, ScoringMode, RewardDistribution, Phase};
-    use my_addr::userprofile;
+    use my_addr::game_types::{Self, ChallengeStatus, ChallengeCategory, SubmissionStatus, ScoringMode, RewardDistribution};
+    use my_addr::userprofile::{Self, UserStats};
+    use my_addr::admin;
     //Pinata, irys, arweave, nft.storage 
 
+    // --- CONSTANTS ---
     const MAX_JUDGES: u64 = 10;
     const MAX_CANDIDATES: u64 = 1000;
     const MAX_WINNERS: u64 = 20;
 
-    const PLATFORM_FEE_BPS: u64 = 250; // 2.5%
-    const MIN_REWARD: u64 = 1000000; // 1 ANANTA (assuming 6 decimals)
 
-    // --- Errors ---
+    // --- ERRORS ---
     ///Không có quyền 
     #[error]
     const E_NOT_AUTHORIZED: u64 = 1;  
@@ -59,6 +59,7 @@ module my_addr::challenge {
     #[error]
     const TOTAL_PERCENT: u64 = 100;
 
+    // --- EVENTS ---
     //Chỉ hiển thị thứ frontend cần nhất
     #[event] 
     struct ChallengeCreatedEvent has drop, store {
@@ -69,6 +70,7 @@ module my_addr::challenge {
         category: ChallengeCategory,
         end_at: u64,
         metadata_uri: String,
+        challenge_address: address, //Thêm cái này để frontend dễ bắt sự kiện
     }
 
     struct ChallengeRegistry has key {
@@ -85,11 +87,8 @@ module my_addr::challenge {
     //--- Struct Resource(Lưu trong object) ---
     struct Challenge has key {
         challenge_id: u64,
-
         status: ChallengeStatus,
         flags: u64,
-
-        // Economy, chỉ lưu handle, rất nhẹ
         initial_reward: u64,
         reward_asset_store: Object<FungibleStore>,
         asset: Object<Metadata>,
@@ -105,22 +104,15 @@ module my_addr::challenge {
         // Người thắng cuộc (Ban đầu là Option::none())
         top_candidates: vector<Candidate>,  // Hỗ trợ nhiều người thắng
 
-        //Thời gian
-        phase: Phase,
+        //Thời gian và phase
         create_at: u64,
         start_at: u64,
         submission_deadline: u64,
         voting_deadline: u64, //Hạn chót chấm điểm 
-
-        // Biến động cho Tranh luận (Chỉ set khi Phase == ResultsPublished)
-        dispute_start_at: u64,
+        dispute_start_at: u64, //Thời gian bắt đầu khiếu nại
 
         // Versioning
         version: u8,
-
-        config_addr: address,
-
-        extend_ref: ExtendRef,
     }
 
     struct ChallengeConfig has key {
@@ -138,14 +130,15 @@ module my_addr::challenge {
         distribution: RewardDistribution, //Cách phân phối phần thưởng
 
         // Dispute Settings
-        dispute_duration: u64,
-        dispute_fee: u64,
+        dispute_duration: u64,  //Thời gian khiếu nại (vd 48h) 
+        dispute_fee: u64,   
 
         // Judges (Thường ít thay đổi)
         judges: vector<address>,
         
         // Versioning
         version: u8,
+        extend_ref: ExtendRef,
     }
 
     /// --- Submission Resource ---
@@ -165,7 +158,7 @@ module my_addr::challenge {
         move_to(admin, ChallengeRegistry{
             next_challenge_id: aggregator_v2::create_aggregator(18446744073709551615),
             challenges: smart_table::new(),
-            allowed_assets: vector::empty();
+            allowed_assets: vector::empty(),
         })
     }
 
@@ -174,7 +167,7 @@ module my_addr::challenge {
         //Tiêu đề
         title: String, //Tiêu đề 
         metadata_uri: String, //Link nội dung cụ thể
-        //luật chơi
+        //Luật chơi
         category_val: u8, //Loại thử thách 
         scoring_mode_val: u8, // Frontend gửi u8, loại chấm điểm 
         distribution_val: u8, //cách chia thưởng
@@ -186,17 +179,24 @@ module my_addr::challenge {
         voting_duration: u64,     // Thời gian cho chấm điểm (VD: 3 ngày)
         dispute_duration: u64,    // Thời gian cho khiếu nại (VD: 1 ngày)
         initial_reward: u64, // số tiền thưởng ban đầu
+        asset_address: address, //Loại FA(frontend sẽ gửi tham số này)
         //Giám khảo 
-        additional_judges: vector<address> //mặc định giám khảo là creator, thêm ai thì điền vào
-    ) acquires ChallengeRegistry {
+        additional_judges: vector<address> //yêu cầu ít nhất 1 giám khảo, creator có thể thêm hoặc xóa giám khảo
+    ) acquires ChallengeRegistry, UserStats{
         let creator_addr = signer::address_of(creator);
 
         //Assert 
         assert!(title.length() <= 64, E_TITLE_TOO_LONG);
         assert!(metadata_uri.length() <= 256, E_METADATA_URI_TOO_LONG);
         assert!(distribution_params.length() == max_winners, 999);
-        assert!(max_winners <= 20, 999);
+        assert!(max_winners >= 1 && max_winners <= 20, 999);
+        assert!(additional_judges.length() >= 1 && additional_judges.length() <=20, 999);
         validate_distribution_params(distribution_val, distribution_params);
+
+        let treasury_addr = admin::get_treasury_addr();
+        let creation_fee = admin::get_creation_fee();
+        let fee_bps = admin::get_platform_fee_bps();
+        let dispute_fee = admin::get_dispute_fee();
 
         let category = game_types::u8_to_category(category_val);
         let scoring_mode = game_types::u8_to_scoring(scoring_mode_val);
@@ -204,18 +204,104 @@ module my_addr::challenge {
 
 
         let challenge_registry = borrow_global_mut<ChallengeRegistry>(@my_addr);
-
+        //Tăng id lên 1 lấy id
+        challenge_registry.next_challenge_id.add(1); //Tăng id lên 1
         let next_challenge_id = aggregator_v2::read(&challenge_registry.next_challenge_id);
-        let asset_address = challenge_registry.allowed_assets.borrow()
 
-        let challenge_object = object::create_named_object(, bcs::to_bytes(&next_challenge_id));
-        let challenge_object_signer = object::generate_signer(&challenge_object);
+        //Lấy token mặc định 
+        //Kiểm tra asset_address được truyền vào có đúng với allowed_assets không
+        assert!(challenge_registry.allowed_assets.contains(&asset_address), 999);
+        let asset_object = object::address_to_object<Metadata>(asset_address);
+
+        //Lấy phí 
+        if (creation_fee > 0 ) {
+            primary_fungible_store::transfer(creator, asset_object, treasury_addr, creation_fee);
+        };
+        let platform_fee_amount = (initial_reward * fee_bps) / 10000;
+        let final_reward = initial_reward - platform_fee_amount;
+        if (fee_bps > 0) {
+            primary_fungible_store::transfer(creator, asset_object, treasury_addr, platform_fee_amount);
+        };
+
+        let challenge_object_ctor = object::create_object(creator_addr); //Vì đã lưu id => address ở ChallengeRegistry nên không cần create_named_object
+        let challenge_object_signer = object::generate_signer(&challenge_object_ctor);
+        let challenge_addr = object::address_from_constructor_ref(&challenge_object_ctor);
+
+        smart_table::add(&mut challenge_registry.challenges, next_challenge_id, challenge_addr);
+
+        //Tạo FungibleStore cho Object
+        let store = primary_fungible_store::ensure_primary_store_exists(challenge_addr, asset_object);
+
+        //Rút tiền từ Creator và nạp vào(đã trừ fee ở trên), vì phải nhắm tới store nên dùng hàm withdraw và deposit 
+        if (final_reward > 0) {
+            primary_fungible_store::transfer(creator, asset_object, challenge_addr, final_reward);
+        };
+
+
+        //Khởi tạo bộ đếm(AGGREGATORS)
+        let limit = MAX_U64;
+        let agg_total_sponsored = aggregator_v2::create_aggregator(limit);
+        let agg_sponsor_count = aggregator_v2::create_aggregator(limit);
+        let agg_submission_count = aggregator_v2::create_aggregator(limit); 
+
+        //Tính toán thời gian 
+        let now = timestamp::now_seconds();
+        let start_at = now + start_delay;
+        let sub_deadline = start_at + submission_duration;
+        let vote_deadline = sub_deadline + voting_duration;
+        let dispute_start = vote_deadline; //Khiếu nại bắt đầu ngay khi kết thúc vote
+
+        //tạo extend_ref
+        let extend_ref = object::generate_extend_ref(&challenge_object_ctor);
+
         move_to(&challenge_object_signer, Challenge {
             challenge_id: next_challenge_id,
-            status: ChallengeStatus::Upcoming,
+            status: ChallengeStatus::Active,
             flags: 0,
-            initial_reward,
-            reward_asset_store: 
+            //Economy 
+            initial_reward: final_reward,
+            reward_asset_store: store,
+            asset: asset_object,
+            //Counters
+            total_sponsored: agg_total_sponsored,
+            sponsor_count: agg_sponsor_count,
+            submissions: smart_table::new(),
+            submission_count: agg_submission_count,
+            top_candidates: vector::empty(),
+            create_at: now,
+            start_at,
+            submission_deadline: sub_deadline,
+            voting_deadline: vote_deadline,
+            dispute_start_at: dispute_start,
+            version: 1,       
+        });
+
+        move_to(&challenge_object_signer, ChallengeConfig {
+            challenge_id,
+            creator: creator_addr,
+            title,
+            metadata_uri,
+            category,
+            platform_fee_bps: fee_bps,
+            scoring_mode,
+            max_winners,
+            distribution,
+            dispute_duration, //thời gian khiếu nại 
+            dispute_fee, //phí khiếu nại
+            judges: additional_judges,
+            version: 1,
+            extend_ref
+        });
+
+        event::emit(ChallengeCreatedEvent{
+            challenge_id,
+            creator: creator_addr,
+            title,
+            reward_amount: final_reward,
+            category,
+            end_at: vote_deadline,
+            metadata_uri,
+            challenge_address: challenge_addr,
         })
     }
 
@@ -223,9 +309,10 @@ module my_addr::challenge {
         admin: &signer,
         asset: address,
     ) acquires ChallengeRegistry {
-        assert!(@my_addr == signer::address_of(admin), 999);
+        assert!(@my_addr == signer::address_of(admin), 999); //chỉ admin mới được thêm 
         let challenge_registry = borrow_global_mut<ChallengeRegistry>(@my_addr);
-        challenge_registry.allowed_assets.
+        assert!(challenge_registry.allowed_assets.contains(&asset), 999); //Kiểm tra xem đã tồn tại trong vector chưa
+        challenge_registry.allowed_assets.push_back(asset);
     }
 
     fun validate_distribution_params(
