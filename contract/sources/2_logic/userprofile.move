@@ -92,7 +92,6 @@ module my_addr::userprofile {
     }
 
     struct GameAccount has key {
-        // 👇 Dùng Enum ServerRegion (đã import)
         server_region: ServerRegion, 
         uid: String,
         is_main: bool,

@@ -5,8 +5,12 @@ module my_addr::admin {
     use aptos_framework::object::{Self, Object};
     use aptos_framework::fungible_asset::{Self, FungibleStore};
 
-    // --- Errors ---
+    /// --- Lỗi không có quyền ---
+    #[error]
     const E_NOT_AUTHORIZED: u64 = 1;
+
+    struct AdminCap has key {}
+
     // --- Platform Treasury ---
     struct PlatformConfig has key {
         //Địa chỉ nhận tiền phí
@@ -15,16 +19,24 @@ module my_addr::admin {
         //Cấu hình phí 
         creation_fee: u64,  //Phí tạo 
         platform_fee_bps: u64, //Phí % (250 = 2,5%)
-        min_reward_amount: u64, 
-        dispute_fee: u64 //phí khiếu nại
+        min_reward_amount: u64,  //Tiền thưởng tối thiểu cho challenge
+        submit_fee: u64, //Phí nộp bài, tránh spam bài nộp
+        dispute_fee: u64 //Phí khiếu nại
     }
 
     fun init_module(admin: &signer) {
+        let addr = signer::address_of(admin);
+
+        assert!(!exists<AdminCap>(addr), E_NOT_AUTHORIZED);
+        assert!(!exists<PlatformConfig>(@my_addr), E_NOT_AUTHORIZED);  
+
+        move_to(admin, AdminCap{});
         move_to(admin, PlatformConfig {
             treasury_addr: signer::address_of(admin),
             creation_fee: 100_000_000, //(100 Ananta)
             platform_fee_bps: 250,
             min_reward_amount: 1_000_000, //1 Ananta
+            submit_fee: 1_000_000, 
             dispute_fee: 1_000_000 
         });
     }
@@ -34,15 +46,22 @@ module my_addr::admin {
         admin: &signer,
         new_creation_fee: u64,
         new_bps: u64,
-    ) acquires PlatformConfig {
+        new_min_reward: u64,
+        new_submit_fee: u64,
+        new_dispute_fee: u64,
+    ) acquires PlatformConfig, AdminCap {
         //Đảm bảo người gọi sở hữu PlatformConfig
         let admin_addr = signer::address_of(admin);
-        assert!(exists<PlatformConfig>(admin_addr), 999);
 
-        let config = borrow_global_mut<PlatformConfig>(admin_addr);
+        assert!(exists<AdminCap>(admin_addr), E_NOT_AUTHORIZED);
+
+        let config = borrow_global_mut<PlatformConfig>(@my_addr);
 
         config.creation_fee = new_creation_fee;
         config.platform_fee_bps = new_bps;
+        config.min_reward_amount = new_min_reward;
+        config.submit_fee = new_submit_fee;
+        config.dispute_fee = new_dispute_fee;
     }
 
     //--- GETTERS (Quan trọng: Để module khác đọc dữ liệu) ---
@@ -52,7 +71,7 @@ module my_addr::admin {
         borrow_global<PlatformConfig>(@my_addr).treasury_addr
     }
 
-    //Lấy phí tạo 
+    //Lấy phí tạo challenge
     #[view]
     public fun get_creation_fee(): u64 acquires PlatformConfig {
         borrow_global<PlatformConfig>(@my_addr).creation_fee
@@ -68,5 +87,17 @@ module my_addr::admin {
     #[view]
     public fun get_dispute_fee(): u64 acquires PlatformConfig {
         borrow_global<PlatformConfig>(@my_addr).dispute_fee
+    }
+
+    //Số tiền thưởng tối thiểu của challenge
+    #[view]
+    public fun get_min_reward_amount(): u64 acquires PlatformConfig {
+        borrow_global<PlatformConfig>(@my_addr).min_reward_amount
+    }
+
+    //Phí nộp bài
+    #[view]
+    public fun get_submit_fee(): u64 acquires PlatformConfig {
+        borrow_global<PlatformConfig>(@my_addr).submit_fee
     }
 }

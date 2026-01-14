@@ -11,9 +11,8 @@ module my_addr::challenge {
     use aptos_std::simple_map::{Self, SimpleMap};
      
     use aptos_framework::object::{Self, Object, ExtendRef};
-    use aptos_framework::fungible_asset::{Self, Metadata, FungibleStore};
+    use aptos_framework::fungible_asset::{Metadata, FungibleStore};
     use aptos_framework::primary_fungible_store;
-    use aptos_framework::aggregator_v2::{Self, Aggregator};
     use aptos_framework::event;
     use aptos_framework::timestamp;
 
@@ -98,7 +97,7 @@ module my_addr::challenge {
         sponsor_count: u64,
 
         // Submissions
-        submissions: SmartTable<address, bool>, //Submission là resource thường lưu vào account user
+        submissions: SmartTable<address, Submission>, //Submission là resource thường lưu vào account user
         submission_count: u64,
 
         // Người thắng cuộc (Ban đầu là Option::none())
@@ -124,7 +123,6 @@ module my_addr::challenge {
         category: ChallengeCategory,
 
         //Setting, Rules 
-        platform_fee_bps: u64, //Phí nền tảng(2,5%)
         scoring_mode: ScoringMode, //Cơ chế chấm điểm
         max_winners: u64, //Số người thắng tối đa
         distribution: RewardDistribution, //Cách phân phối phần thưởng
@@ -162,6 +160,7 @@ module my_addr::challenge {
         })
     }
 
+    ///Tạo thử thách
     public entry fun create_challenge(
         creator: &signer, //Người tạo
         //Tiêu đề
@@ -174,7 +173,7 @@ module my_addr::challenge {
         max_winners: u64, //Số người thắng tối đa
         distribution_params: vector<u64>, //theo %
         //Thời gian
-        start_delay: u64,         // 0 nếu muốn bắt đầu luôn. >0 nếu muốn lên lịch (Upcoming)
+        start_delay: u64,         // Đảm bảo luôn lớn hơn 1 phút
         submission_duration: u64, // Thời gian cho nộp bài (VD: 7 ngày)
         voting_duration: u64,     // Thời gian cho chấm điểm (VD: 3 ngày)
         dispute_duration: u64,    // Thời gian cho khiếu nại (VD: 1 ngày)
@@ -190,6 +189,7 @@ module my_addr::challenge {
         assert!(metadata_uri.length() <= 256, E_METADATA_URI_TOO_LONG);
         assert!(distribution_params.length() == max_winners, 999);
         assert!(max_winners >= 1 && max_winners <= MAX_WINNERS, 999);
+        assert!(start_delay >= 60, 999);
         assert!(additional_judges.length() >= 1 && additional_judges.length() <=20, 999);
         validate_distribution_params(distribution_val, distribution_params);
 
@@ -250,7 +250,7 @@ module my_addr::challenge {
 
         move_to(&challenge_object_signer, Challenge {
             challenge_id: next_challenge_id,
-            status: ChallengeStatus::Active,
+            status: ChallengeStatus::Upcoming,
             flags: 0,
             //Economy 
             initial_reward: final_reward,
@@ -276,7 +276,6 @@ module my_addr::challenge {
             title,
             metadata_uri,
             category,
-            platform_fee_bps: fee_bps,
             scoring_mode, //luật chơi
             max_winners,
             distribution, //Cách phân phối phần thưởng 
@@ -290,7 +289,7 @@ module my_addr::challenge {
         userprofile::on_challenge_created(creator_addr, initial_reward, creation_fee);
 
         event::emit(ChallengeCreatedEvent{
-            challenge_id,
+            challenge_id: next_challenge_id,
             creator: creator_addr,
             title,
             reward_amount: final_reward,
@@ -301,26 +300,76 @@ module my_addr::challenge {
         });
     }
 
-    public fun add_judges(creator: &signer, challenge_id: u64, ) acquires ChallengeRegistry, ChallengeConfig {
-        ///Xác định địa chỉ Challenge Object 
-        let registry = borrow_global<ChallengeRegistry>(@my_addr);
-        let challenge_addr = *registry.challenges.borrow(challenge_id);
-        assert!(object::is_owner())
-        let config = borrow_global_mut<ChallengeConfig>(challenge_addr);
-
+    //Nộp bài 
+    public entry fun submit(
+        user: &signer,
+        challenge_id: u64,
+        proof_uri: String,
+    ) acquires Challenge {
         
     }
 
+    ///Thêm giám khảo 
+    public fun add_judges(creator: &signer, challenge_id: u64, new_judges: vector<address>) acquires ChallengeRegistry, ChallengeConfig {
+        let creator_addr = signer::address_of(creator);
+        ///Xác định địa chỉ Challenge Object 
+        let registry = borrow_global<ChallengeRegistry>(@my_addr);
+        let challenge_addr = *registry.challenges.borrow(challenge_id);
+        let challenge_obj = object::address_to_object<ChallengeConfig>(challenge_addr);
+        assert!(object::is_owner(challenge_obj, creator_addr), 999); //kiểm tra xem creator có phải chủ sở hữu challenge không
+        let config = borrow_global_mut<ChallengeConfig>(challenge_addr);
+        config.judges.append(new_judges);
+    }
+
+    ///Xóa giám khảo
+    public entry fun remove_judge_ordered(
+        challenge: &mut ChallengeConfig, 
+        judge_to_remove: address
+    ) {
+        let (found, i) = vector::index_of(&challenge.judges, &judge_to_remove);
+
+        while (found) {
+            // Dùng remove thường: Xóa xong các phần tử sau tự dồn lên
+            vector::remove(&mut challenge.judges, i);
+
+            // Tìm tiếp (Lưu ý: Vì các phần tử đã dồn lên, 
+            // nên lần tìm tiếp theo vẫn sẽ chính xác)
+            (found, i) = vector::index_of(&challenge.judges, &judge_to_remove);
+        };
+    }
+
+    ///Thêm token chấp nhận vào danh sách
     public entry fun add_whitelist_asset(
         admin: &signer,
         asset: address,
     ) acquires ChallengeRegistry {
         assert!(@my_addr == signer::address_of(admin), 999); //chỉ admin mới được thêm 
         let challenge_registry = borrow_global_mut<ChallengeRegistry>(@my_addr);
-        assert!(challenge_registry.allowed_assets.contains(&asset), 999); //Kiểm tra xem đã tồn tại trong vector chưa
+        assert!(!challenge_registry.allowed_assets.contains(&asset), 999); //Kiểm tra xem đã tồn tại trong vector chưa
         challenge_registry.allowed_assets.push_back(asset);
     }
 
+    ///Trả về danh sách giám khảo cho frontend
+    #[view]
+    public fun get_judges(challenge_id: u64): vector<address> acquires ChallengeRegistry, ChallengeConfig {
+        let registry = borrow_global<ChallengeRegistry>(@my_addr);
+        let challenge_addr = *registry.challenges.borrow(challenge_id);
+
+        let config = borrow_global<ChallengeConfig>(challenge_addr);
+        config.judges
+    }
+
+    ///Trả về bool xem có đúng là giám khảo không để frontend hiện ra nút chấm
+    #[view]
+    public fun is_judge(judge: address, challenge_id: u64): bool acquires ChallengeRegistry, ChallengeConfig {
+        let registry = borrow_global<ChallengeRegistry>(@my_addr);
+        let challenge_addr = *registry.challenges.borrow(challenge_id);
+
+        let config = borrow_global<ChallengeConfig>(challenge_addr);
+        config.judges.contains(&judge)
+    }
+
+    ///Kiểm tra xem tỉ lệ phần thưởng của danh sách winners có đúng không
     fun validate_distribution_params(
         distribution_val: u8,
         distribution_params: vector<u64>,

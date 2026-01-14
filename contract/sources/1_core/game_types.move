@@ -41,9 +41,11 @@ module my_addr::game_types {
     }
 
     public enum ChallengeStatus has copy, drop, store {
+        Upcoming, //Đã tạo, chưa bắt đầu
         Active,     // Đang diễn ra (Bình thường)
+        Completed,   // Đã kết thúc, chưa trao giải
+        Settled,     // Đã trao thưởng xong (final)
         Cancelled,  // Admin hủy kèo (Dừng lại)
-        Completed,  // Đã trao giải xong (Kết thúc)
     }
 
     public enum ChallengeCategory has copy, drop, store {
