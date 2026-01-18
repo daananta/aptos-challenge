@@ -72,6 +72,23 @@ module my_addr::challenge {
         challenge_address: address, //Thêm cái này để frontend dễ bắt sự kiện
     }
 
+    //Event khi người dùng nộp bài
+    #[event]
+    struct SubmissionEvent has drop, store {
+        challenge_id: u64,
+        submitter: address,
+        timestamp: u64,
+    }
+
+    #[event]
+    struct VoteEvent has drop, store {
+        challenge_id: u64,
+        voter: address,
+        candidate: address,
+        timestamp: u64,
+        score_val: u64,
+    }
+
     struct ChallengeRegistry has key {
         next_challenge_id: u64,
         challenges: SmartTable<u64, address>,  // id -> object_address
@@ -83,6 +100,13 @@ module my_addr::challenge {
         addr: address,
         votes: u64,
     }
+
+    // Key để tra cứu lịch sử vote
+    struct VoteReceipt has copy, drop, store {
+        voter: address,        // Ai vote?
+        candidate: address,    // Vote cho bài thi nào? (dùng address của submitter làm ID bài thi)
+    }
+
     //--- Struct Resource(Lưu trong object) ---
     struct Challenge has key {
         challenge_id: u64,
@@ -100,13 +124,16 @@ module my_addr::challenge {
         submissions: SmartTable<address, Submission>, //Submission là resource thường lưu vào account user
         submission_count: u64,
 
-        // Người thắng cuộc (Ban đầu là Option::none())
-        top_candidates: vector<Candidate>,  // Hỗ trợ nhiều người thắng
+        // Người thắng cuộc (Ban đầu là Option::none())? vector empty
+        top_candidates: vector<Candidate>,  // Hỗ trợ nhiều người thắng(tối đa 20)
+
+        // Key: (Người vote + Bài thi) -> Value: bool (true)
+        vote_records: SmartTable<VoteReceipt, bool>,
 
         //Thời gian và phase
         create_at: u64,
         start_at: u64,
-        submission_deadline: u64,
+        submission_deadline: u64, //Hạn chót nộp bài
         voting_deadline: u64, //Hạn chót chấm điểm 
         dispute_start_at: u64, //Thời gian bắt đầu khiếu nại
 
@@ -147,8 +174,9 @@ module my_addr::challenge {
         // proof_has: vector<u8> có vẻ không cần hash vì link trên pinata là hash 
         submitted_at: u64,
         status: SubmissionStatus,
-        verified_by: Option<address>,
-        verified_at: u64,
+        vote_count: u64,
+        total_score: u64,
+        is_hidden: bool,
     }
 
 
@@ -262,6 +290,7 @@ module my_addr::challenge {
             submissions: smart_table::new(),
             submission_count: 0,
             top_candidates: vector::empty(),
+            vote_records: smart_table::new(),
             create_at: now,
             start_at,
             submission_deadline: sub_deadline,
@@ -286,7 +315,7 @@ module my_addr::challenge {
             extend_ref
         });
 
-        userprofile::on_challenge_created(creator_addr, initial_reward, creation_fee);
+        userprofile::on_challenge_created(creator_addr, initial_reward, creation_fee); //đã cập nhật 4 field
 
         event::emit(ChallengeCreatedEvent{
             challenge_id: next_challenge_id,
@@ -305,8 +334,163 @@ module my_addr::challenge {
         user: &signer,
         challenge_id: u64,
         proof_uri: String,
-    ) acquires Challenge {
+    ) acquires Challenge, ChallengeRegistry {
+        let user_addr = signer::address_of(user);
+        let registry = borrow_global<ChallengeRegistry>(@my_addr);
+        let now = timestamp::now_seconds();
+
+        assert!(registry.challenges.contains(challenge_id), 999);
+        let challenge_addr = *registry.challenges.borrow(challenge_id);
+
+        let challenge = borrow_global_mut<Challenge>(challenge_addr);
+
+        //Check thời gian xem có hợp lệ không
+        assert!(challenge.start_at <= now && challenge.submission_deadline >= now, 999);
+        //User chỉ được nộp 1 bài
+        assert!(!challenge.submissions.contains(user_addr), 999);
+
+        let submission = Submission {
+            challenge_id,
+            submitter: user_addr,
+            proof_uri,
+            submitted_at: now,
+            status: SubmissionStatus::Pending,
+            vote_count: 0,
+            total_score: 0,
+            is_hidden: false,
+        };
+
+        challenge.submissions.add(user_addr, submission);
+        challenge.submission_count += 1;
+
+        userprofile::update_joined_challenges(user_addr, challenge_id); //Thêm challenge vào danh sách tham gia và số lần tham gia 
+        userprofile::update_reputation(user_addr, 100);
+
+        event::emit(SubmissionEvent {
+            challenge_id,
+            submitter: user_addr,
+            timestamp: now
+        });
+    }
+
+    public entry fun vote(sender: &signer, 
+        challenge_id: u64, 
+        candidate_addr: address, 
+        score_val: u64
+    ) acquires ChallengeRegistry, ChallengeConfig, Challenge {
+        assert!(score_val <= 100, 999); //Check xem điểm hợp lệ không
+        let sender_addr = signer::address_of(sender);
         
+        let registry = borrow_global<ChallengeRegistry>(@my_addr);
+        
+        let challenge_addr = *registry.challenges.borrow(challenge_id);
+        let challenge = borrow_global_mut<Challenge>(challenge_addr);
+        let submission = challenge.submissions.borrow_mut(candidate_addr);
+
+        //Check sender đã từng vote cho address ở challenge này chưa 
+        let receipt_key = VoteReceipt{voter: sender_addr, candidate: candidate_addr};
+        assert!(!challenge.vote_records.contains(receipt_key), 999);
+
+        //Lấy Config để xem đang chơi ở chế độ nào
+        let config = borrow_global<ChallengeConfig>(challenge_addr);
+
+        let final_score_added: u64 = 0;
+
+        if (config.scoring_mode == ScoringMode::JudgePick) {
+            assert!(config.judges.contains(&sender_addr), 999); //Đảm bảo sender ở trong vector judges
+            submission.total_score += score_val;
+            final_score_added = score_val;
+        } else if (config.scoring_mode == ScoringMode::CommunityVote) {
+            submission.total_score += 1;
+            final_score_added = 1;
+        };
+
+        submission.vote_count += 1;
+
+        //Đánh dấu đã vote
+        challenge.vote_records.add(receipt_key, true);
+
+        //Cập nhật bảng xếp hạng 
+        update_leaderboard(challenge, candidate_addr, submission.total_score);
+
+        //Nâng reputation cho sender và candidate
+        userprofile::update_reputation(candidate_addr, 9);
+        userprofile::update_reputation(sender_addr, 11);
+
+        event::emit(VoteEvent{
+            challenge_id,
+            voter: sender_addr,
+            candidate: candidate_addr,
+            timestamp: timestamp::now_seconds(),
+            score_val: final_score_added,
+        })
+    }
+
+    // Update leaderboard, hàm này được gọi mỗi khi giám khảo gọi hàm chấm điểm
+    fun update_leaderboard(
+        challenge: &mut Challenge,
+        candidate_addr: address,
+        new_score: u64
+    ) {
+        let board = &mut challenge.top_candidates;
+
+        //Bước 1: Xóa cũ 
+        //Nếu thí sinh có trong bảng, xóa họ trước, xem họ như người mới với điểm với và tìm vị trí chèn lại 
+
+        let (found, idx) = find_candidate_index(board, candidate_addr);
+
+        if(found) {
+            board.remove(idx);
+        }; //Đã xóa
+
+        //Bước 2: Chèn mới 
+        //Duyệt từ trên xuống, người điểm cao nhất là idx 0 
+        let i = 0;
+        let len = vector::length(board);
+        let inserted = false;
+
+        while (i < len) {
+            let current_candidate = board.borrow(i);
+
+            //Nếu điểm cao hơn người đang đứng vị trí i, chèn trước họ(chiếm vị trí i)
+            if(new_score > current_candidate.votes) {
+                let c = Candidate {addr: candidate_addr, votes: new_score};
+                board.insert(i, c);
+                inserted = true;
+                break; //đã chèn xong, thoát vòng lặp
+            };
+            i += 1;
+        };
+
+        //BƯỚC 3: XỬ LÝ NẾU CHƯA ĐƯỢC CHÈN ---
+        // Nếu chạy hết vòng lặp mà chưa chèn (tức là điểm thấp hơn tất cả những người trong top hiện tại)
+        // Nhưng bảng vẫn còn chỗ trống (chưa đủ 20 người) -> Nhét vào cuối bảng (bét bảng)
+        if(!inserted && vector::length(board) < MAX_WINNERS) {
+            let c = Candidate {addr: candidate_addr, votes: new_score};
+            board.push_back(c);
+        };
+
+        // --- BƯỚC 4: CẮT GỌT (Trim) ---
+        // Nếu sau khi chèn mà danh sách bị dài quá quy định (ví dụ thành 21 người)
+        // -> Xóa người đứng cuối cùng (người điểm thấp nhất bị rớt đài)
+        if (vector::length(board) > MAX_WINNERS) {
+            vector::pop_back(board);
+        };
+    }
+
+    /// Tìm xem candidate_addr có đang nằm trong Top 20 không
+    /// Trả về (true, index) nếu tìm thấy, (false, 0) nếu không
+    fun find_candidate_index(board: &vector<Candidate>, addr: address): (bool, u64) {
+        let i = 0;
+        let len = vector::length(board);
+        while (i < len) {
+            // So sánh địa chỉ
+            if (vector::borrow(board, i).addr == addr) {
+                return (true, i)
+            };
+            i = i + 1;
+        };
+        (false, 0)
     }
 
     ///Thêm giám khảo 

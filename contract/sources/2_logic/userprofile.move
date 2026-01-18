@@ -2,6 +2,7 @@ module my_addr::userprofile {
     use std::signer;
     use std::string::{Self, String};
     use std::error;
+    use std::vector;
     
     use aptos_framework::event;
     use aptos_framework::smart_table::{Self, SmartTable};
@@ -84,6 +85,7 @@ module my_addr::userprofile {
         disputes_lost: u64,     // Số khiếu nại bị xử thua
         bounties_created: u64,  // Số bounty user đã tạo
         total_spent: u64,       // Tổng token đã chi (tạo bounty, fee, penalty)
+        joined_challenges: vector<u64>, //Danh sách bài nộp tất cả các challenge
         rank_level: RankLevel,  // Cấp bậc hiện tại (Bronze/Silver/Gold/...)
         season_points: u64,     // Điểm theo mùa (reset mỗi season, dùng leaderboard)
         last_active_at: u64,    // Thời điểm hoạt động gần nhất (timestamp giây)
@@ -99,12 +101,6 @@ module my_addr::userprofile {
         linked_at: u64,
     }   
 
-    struct PlayerPortfolio has key {
-        // Map từ Challenge ID -> Submission
-        submissions: SmartTable<u64, Submission>, 
-        total_participated: u64,
-        total_wins: u64,
-    }
     
     // =============================================================================
     // FUNCTIONS
@@ -134,6 +130,7 @@ module my_addr::userprofile {
             disputes_lost: 0,
             bounties_created: 0,
             total_spent: 0,
+            joined_challenges: vector::empty(),
             // 👇 Khởi tạo bằng Enum
             rank_level: RankLevel::Bronze, 
             season_points: 0,
@@ -150,6 +147,7 @@ module my_addr::userprofile {
             verified: false,
             linked_at: 0,
         });
+
 
         event::emit(UserInitializedEvent{
             user: user_addr,
@@ -301,6 +299,12 @@ module my_addr::userprofile {
         user_stats.last_active_at = timestamp::now_seconds();
     }
 
+    //Nâng chỉ số bounties_joineh 
+    public(package) fun update_bounties_joineh(user_addr: address) acquires UserStats {
+        let user_stats = borrow_global_mut<UserStats>(user_addr);
+        user_stats.bounties_joined += 1;
+    }
+
     //Nâng chỉ số uy tín 
     public(package) fun update_reputation(user_addr: address, delta: u64) acquires UserStats {
         let user_stats = borrow_global_mut<UserStats>(user_addr);
@@ -308,6 +312,7 @@ module my_addr::userprofile {
         user_stats.last_active_at = timestamp::now_seconds();
     }
 
+    //Update số tiền đã chi cho challenge
     public(package) fun update_total_spent(user_addr: address, delta: u64) acquires UserStats {
         let user_stats = borrow_global_mut<UserStats>(user_addr);
         user_stats.total_spent += delta;
@@ -323,6 +328,13 @@ module my_addr::userprofile {
         user_stats.total_spent += total_spent;
         user_stats.reputation += reputation;
         user_stats.last_active_at = timestamp::now_seconds();
+    }
+
+    //Cập nhật danh sách challenge tham gia và số lần tham gia
+    public(package) fun update_joined_challenges(user_addr: address, challenge_id: u64) acquires UserStats {
+        let user_stats = borrow_global_mut<UserStats>(user_addr);
+        user_stats.joined_challenges.push_back(challenge_id);
+        user_stats.bounties_joined +=1;
     }
     
     // View Functions

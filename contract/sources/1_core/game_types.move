@@ -158,4 +158,4 @@ module my_addr::game_types {
             abort E_INVALID_DISTRIBUTION_MODE
         }
     }
-}
+}       
